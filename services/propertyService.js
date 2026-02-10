@@ -62,7 +62,7 @@ async function searchProperties({ bbox, filters = {}, limit = 500 }) {
   params.push(Math.min(limit, 2000));
 
   const query = `
-    SELECT p.attom_id, p.fips_code, p.parcel_number_raw, p.address_line1, p.address_line2,
+    SELECT p.attom_id, p.fips_code, p.parcel_number_raw, p.address_full,
       p.address_city, p.address_state, p.address_zip, p.latitude, p.longitude,
       p.property_use_standardized, p.year_built, p.bedrooms_count, p.bath_count,
       p.area_building, p.area_lot_sf, p.area_lot_acres, p.tax_assessed_value_total,
@@ -78,7 +78,15 @@ async function searchProperties({ bbox, filters = {}, limit = 500 }) {
 
 async function getPropertyDetail(attomId) {
   const [propertyResult, ownershipResult, taxResult, salesResult, loansResult, valuationsResult, climateResult, permitsResult, foreclosureResult] = await Promise.all([
-    pool.query(`SELECT p.*, pd.legal_description, pd.garage_type, pd.garage_area, pd.pool_type, pd.hvac_cooling, pd.hvac_heating, pd.foundation, pd.roof_material, pd.has_elevator, pd.has_pool FROM properties p LEFT JOIN property_details pd ON pd.attom_id = p.attom_id WHERE p.attom_id = $1`, [attomId]),
+    pool.query(`
+      SELECT p.*, pd.legal_description, pd.legal_lot, pd.legal_block, pd.construction_type,
+        pd.exterior_walls, pd.foundation, pd.roof_type, pd.roof_material, pd.floor_type,
+        pd.garage_type, pd.garage_area, pd.parking_spaces, pd.pool_type, pd.has_pool,
+        pd.has_spa, pd.has_elevator, pd.has_fireplace, pd.fireplace_count,
+        pd.hvac_cooling, pd.hvac_heating, pd.hvac_fuel, pd.quality_grade, pd.condition
+      FROM properties p
+      LEFT JOIN property_details pd ON pd.attom_id = p.attom_id
+      WHERE p.attom_id = $1`, [attomId]),
     pool.query(`SELECT * FROM ownership WHERE attom_id = $1 ORDER BY ownership_sequence ASC`, [attomId]),
     pool.query(`SELECT * FROM tax_assessments WHERE attom_id = $1 ORDER BY tax_year DESC LIMIT 5`, [attomId]),
     pool.query(`SELECT * FROM sales_transactions WHERE attom_id = $1 ORDER BY recording_date DESC LIMIT 10`, [attomId]),
@@ -91,11 +99,24 @@ async function getPropertyDetail(attomId) {
 
   if (propertyResult.rows.length === 0) return null;
 
+  // Attach mortgages to each sale
+  const sales = [];
+  for (const sale of salesResult.rows) {
+    const mortgageResult = await pool.query(
+      `SELECT * FROM mortgage_records WHERE transaction_id = $1 ORDER BY mortgage_position ASC`,
+      [sale.transaction_id]
+    );
+    sales.push({
+      ...normalizeRow(sale),
+      mortgages: normalizeRows(mortgageResult.rows),
+    });
+  }
+
   return {
     ...normalizeRow(propertyResult.rows[0]),
     ownership: normalizeRows(ownershipResult.rows),
     taxAssessments: normalizeRows(taxResult.rows),
-    salesTransactions: normalizeRows(salesResult.rows),
+    salesTransactions: sales,
     currentLoans: normalizeRows(loansResult.rows),
     valuations: normalizeRows(valuationsResult.rows),
     climateRisk: normalizeRow(climateResult.rows[0]) || null,
