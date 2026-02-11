@@ -90,7 +90,7 @@ When responding:
 Always respond with a text summary of your findings after using tools. Never return an empty response — summarize the count, key patterns, value ranges, and any notable properties found.`;
 
   // Collect attom_ids from tool results
-  const collectedAttomIds = [];
+  const collectedProperties = [];
 
   let response = await callClaudeAPI(apiKey, systemPrompt, messages, tools);
   let iterations = 0;
@@ -109,13 +109,13 @@ Always respond with a text summary of your findings after using tools. Never ret
           const properties = result.properties || result;
           if (Array.isArray(properties)) {
             properties.forEach(p => {
-              if (p.attomId) collectedAttomIds.push(Number(p.attomId));
+              if (p.attomId) collectedProperties.push({ attomId: Number(p.attomId), latitude: p.latitude ? Number(p.latitude) : null, longitude: p.longitude ? Number(p.longitude) : null });
             });
           }
         }
         // Extract attom_id from single property detail
         if (tu.name === 'get_property_details' && result && result.attomId) {
-          collectedAttomIds.push(Number(result.attomId));
+          collectedProperties.push({ attomId: Number(result.attomId), latitude: result.latitude ? Number(result.latitude) : null, longitude: result.longitude ? Number(result.longitude) : null });
         }
 
         toolResults.push({
@@ -146,10 +146,14 @@ Always respond with a text summary of your findings after using tools. Never ret
     .map(b => b.text)
     .join('\n');
 
-  // Deduplicate attom_ids
-  const uniqueAttomIds = [...new Set(collectedAttomIds)];
+  const seen = new Set();
+  const uniqueProperties = collectedProperties.filter(p => {
+    if (seen.has(p.attomId)) return false;
+    seen.add(p.attomId);
+    return true;
+  });
 
-  return { text, properties: uniqueAttomIds };
+  return { text, properties: uniqueProperties.map(p => p.attomId), propertyMarkers: uniqueProperties };
 }
 
 async function callClaudeAPI(apiKey, systemPrompt, messages, toolDefs) {
