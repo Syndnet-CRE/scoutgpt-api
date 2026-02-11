@@ -85,7 +85,9 @@ When responding:
 - If a query is ambiguous, make reasonable assumptions for Travis County CRE context and state what you assumed
 - For investment-oriented queries, highlight relevant financial metrics (equity, assessed vs market value, tax status)
 - Keep responses concise — 2-4 paragraphs max unless the user asks for detail
-- If no results match, suggest how to broaden the search`;
+- If no results match, suggest how to broaden the search
+
+Always respond with a text summary of your findings after using tools. Never return an empty response — summarize the count, key patterns, value ranges, and any notable properties found.`;
 
   // Collect attom_ids from tool results
   const collectedAttomIds = [];
