@@ -6,10 +6,8 @@ const { parseBbox } = require('../utils/normalize');
 router.get('/', async (req, res) => {
   try {
     const { bbox: bboxStr, limit, ...filterParams } = req.query;
-    const bbox = parseBbox(bboxStr);
-    if (!bbox) {
-      return res.status(400).json({ error: 'bbox parameter required. Format: minLng,minLat,maxLng,maxLat' });
-    }
+    // Default to Travis County area when no bbox provided
+    const bbox = parseBbox(bboxStr) || parseBbox('-98.0,30.1,-97.5,30.5');
 
     const filters = {};
     const booleanFilters = ['absenteeOwner', 'ownerOccupied', 'corporateOwned', 'foreclosure', 'taxDelinquent', 'recentSales', 'highEquity'];
