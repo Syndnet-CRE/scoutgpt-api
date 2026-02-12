@@ -52,7 +52,7 @@ async function executeTool(toolName, toolInput) {
   switch (toolName) {
     case 'search_properties': {
       const bbox = toolInput.bbox ? parseBbox(toolInput.bbox) : null;
-      const filters = { ...toolInput }; delete filters.bbox; delete filters.limit;
+      const filters = { ...toolInput }; delete filters.bbox; delete filters.limit; console.log("[SEARCH] filters:", JSON.stringify(filters));
       return await propertyService.searchProperties({ bbox, filters, limit: toolInput.limit || 20 });
     }
     case 'get_property_details':
