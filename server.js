@@ -27,7 +27,6 @@ app.use('/api/properties', require('./routes/properties'));
 app.use('/api/property', require('./routes/property'));
 app.use('/api/layers', require('./routes/layers'));
 app.use('/api/chat', require('./routes/chat'));
-app.use('/api/debug', require('./routes/debug'));
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found', path: req.originalUrl });
