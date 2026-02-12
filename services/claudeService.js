@@ -1,6 +1,7 @@
 const propertyService = require('./propertyService');
 const spatialService = require('./spatialService');
 const { parseBbox } = require('../utils/normalize');
+const { buildSystemPrompt } = require('../knowledge/system-prompt');
 
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
@@ -65,29 +66,11 @@ async function executeTool(toolName, toolInput) {
   }
 }
 
-async function chat(messages) {
+async function chat(messages, context = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
 
-  const systemPrompt = `You are ScoutGPT, an expert commercial real estate intelligence assistant built by Syndnet Corp. You have direct access to ATTOM property data for Travis County, Texas (FIPS 48453) — over 444,000 properties with ownership records, tax assessments, sales history, mortgage data, valuations, climate risk scores, building permits, and foreclosure records.
-
-Your capabilities:
-- Search properties by location (ZIP code, bounding box), property type, acreage, value range, ownership status (absentee, corporate, owner-occupied), foreclosure status, and tax delinquency
-- Get detailed property profiles with full ownership, financial, and risk data
-- Calculate market statistics (median values, sales volume, price trends) by ZIP code or area
-- Find properties within a radius of any point
-
-Austin ZIP codes you cover: 78701-78799 and surrounding Travis County areas.
-
-When responding:
-- Lead with specific data and numbers, not generic advice
-- When a search returns results, summarize the key findings (count, value ranges, notable properties)
-- If a query is ambiguous, make reasonable assumptions for Travis County CRE context and state what you assumed
-- For investment-oriented queries, highlight relevant financial metrics (equity, assessed vs market value, tax status)
-- Keep responses concise — 2-4 paragraphs max unless the user asks for detail
-- If no results match, suggest how to broaden the search
-
-Always respond with a text summary of your findings after using tools. Never return an empty response — summarize the count, key patterns, value ranges, and any notable properties found.`;
+  const systemPrompt = buildSystemPrompt(context);
 
   // Collect attom_ids from tool results
   const collectedProperties = [];
