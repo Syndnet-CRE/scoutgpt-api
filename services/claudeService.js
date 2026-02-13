@@ -27,7 +27,7 @@ const tools = [
         taxDelinquent: { type: 'boolean', description: 'Filter to tax delinquent properties' },
         recentSales: { type: 'boolean', description: 'Filter to properties sold in last 12 months' },
         highEquity: { type: 'boolean', description: 'Filter to properties with high available equity' },
-        limit: { type: 'number', description: 'Max results to return (default 20, max 100)' },
+        limit: { type: 'number', description: 'Number of results to return. Default 15, max 25.' },
       },
     },
   },
@@ -107,7 +107,7 @@ async function chat(messages, context = {}) {
   let response = await callClaudeAPI(apiKey, systemPrompt, messages, tools);
   let iterations = 0;
 
-  while (response.stop_reason === 'tool_use' && iterations < 5) {
+  while (response.stop_reason === 'tool_use' && iterations < 3) {
     iterations++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResults = [];
@@ -130,10 +130,21 @@ async function chat(messages, context = {}) {
           collectedProperties.push({ attomId: Number(result.attomId), latitude: result.latitude ? Number(result.latitude) : null, longitude: result.longitude ? Number(result.longitude) : null });
         }
 
+        // Truncate large tool results to save tokens
+        let resultStr = JSON.stringify(result);
+        if (resultStr.length > 8000) {
+          if (result.properties && Array.isArray(result.properties)) {
+            result.properties = result.properties.slice(0, 20);
+            resultStr = JSON.stringify(result);
+          }
+          if (resultStr.length > 12000) {
+            resultStr = resultStr.substring(0, 12000) + '... [truncated]';
+          }
+        }
         toolResults.push({
           type: 'tool_result',
           tool_use_id: tu.id,
-          content: JSON.stringify(result),
+          content: resultStr,
         });
       } catch (error) {
         toolResults.push({
@@ -174,6 +185,13 @@ async function callClaudeAPI(apiKey, systemPrompt, messages, toolDefs) {
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 4096, system: systemPrompt, messages, tools: toolDefs }),
   });
+  if (response.status === 429) {
+    console.log('[CLAUDE] Rate limited — returning friendly message');
+    return {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: "I'm processing a lot of data right now. Please wait about 30 seconds and try your query again." }],
+    };
+  }
   if (!response.ok) { const error = await response.text(); throw new Error('Claude API error: ' + response.status + ' - ' + error); }
   return await response.json();
 }

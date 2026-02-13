@@ -79,21 +79,26 @@ async function searchProperties({ bbox, filters = {}, limit = 500 }) {
 async function getPropertyDetail(attomId) {
   const [propertyResult, ownershipResult, taxResult, salesResult, loansResult, valuationsResult, climateResult, permitsResult, foreclosureResult] = await Promise.all([
     pool.query(`
-      SELECT p.*, pd.legal_description, pd.legal_lot, pd.legal_block, pd.construction_type,
-        pd.exterior_walls, pd.foundation, pd.roof_type, pd.roof_material, pd.floor_type,
-        pd.garage_type, pd.garage_area, pd.parking_spaces, pd.pool_type, pd.has_pool,
-        pd.has_spa, pd.has_elevator, pd.has_fireplace, pd.fireplace_count,
-        pd.hvac_cooling, pd.hvac_heating, pd.hvac_fuel, pd.quality_grade, pd.condition
+      SELECT
+        p.*,
+        pd.legal_description, pd.legal_lot, pd.legal_block, pd.legal_section,
+        pd.construction_type, pd.exterior_walls, pd.interior_walls,
+        pd.foundation, pd.roof_type, pd.roof_material, pd.floor_type,
+        pd.garage_type, pd.garage_area, pd.parking_spaces,
+        pd.pool_type, pd.has_pool, pd.has_spa,
+        pd.has_elevator, pd.has_fireplace, pd.fireplace_count,
+        pd.hvac_cooling, pd.hvac_heating, pd.hvac_fuel,
+        pd.quality_grade, pd.condition, pd.gross_area
       FROM properties p
       LEFT JOIN property_details pd ON pd.attom_id = p.attom_id
       WHERE p.attom_id = $1`, [attomId]),
     pool.query(`SELECT * FROM ownership WHERE attom_id = $1 ORDER BY ownership_sequence ASC`, [attomId]),
     pool.query(`SELECT * FROM tax_assessments WHERE attom_id = $1 ORDER BY tax_year DESC LIMIT 5`, [attomId]),
-    pool.query(`SELECT * FROM sales_transactions WHERE attom_id = $1 ORDER BY recording_date DESC LIMIT 10`, [attomId]),
+    pool.query(`SELECT st.* FROM sales_transactions st WHERE st.attom_id = $1 ORDER BY st.recording_date DESC LIMIT 10`, [attomId]),
     pool.query(`SELECT * FROM current_loans WHERE attom_id = $1 ORDER BY loan_position ASC`, [attomId]),
     pool.query(`SELECT * FROM property_valuations WHERE attom_id = $1 ORDER BY valuation_date DESC LIMIT 5`, [attomId]),
     pool.query(`SELECT * FROM climate_risk WHERE attom_id = $1`, [attomId]),
-    pool.query(`SELECT * FROM building_permits WHERE attom_id = $1 ORDER BY effective_date DESC LIMIT 10`, [attomId]),
+    pool.query(`SELECT * FROM building_permits WHERE attom_id = $1 ORDER BY effective_date DESC LIMIT 20`, [attomId]),
     pool.query(`SELECT * FROM foreclosure_records WHERE attom_id = $1 ORDER BY foreclosure_recording_date DESC`, [attomId]),
   ]);
 
