@@ -9,13 +9,13 @@ const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const tools = [
   {
     name: 'search_properties',
-    description: 'Search for properties in Travis County with filters. Returns up to `limit` properties with attomId, address, property type, year built, beds/baths, building area, lot size, assessed value, last sale date/price. Use bbox for map viewport searches, zipCode for ZIP-based searches. Combine filters for targeted results.',
+    description: 'Search for properties in Travis County with filters. Returns up to `limit` properties with attomId, address, property type, year built, beds/baths, building area, lot size, assessed value, last sale date/price. Use bbox for map viewport searches, zipCode for ZIP-based searches. Combine filters for targeted results. IMPORTANT: propertyType accepts ATTOM numeric codes — use "369" for apartments/multifamily, "167" for office, "169" for retail, "238" for industrial/warehouse, "401" for vacant land, "160" for hotel, "339" for self-storage, "148" for medical office. Never pass text labels like "COMMERCIAL" — use numeric codes only.',
     input_schema: {
       type: 'object',
       properties: {
         bbox: { type: 'string', description: 'Bounding box as "minLng,minLat,maxLng,maxLat". Use for map viewport searches.' },
         zipCode: { type: 'string', description: 'ZIP code (e.g., "78701")' },
-        propertyType: { type: 'string', description: 'Property type filter (e.g., "COMMERCIAL", "RESIDENTIAL", "INDUSTRIAL", "VACANT LAND")' },
+        propertyType: { type: 'string', description: 'ATTOM numeric property code. Key codes: "369"=Apartment, "167"=Office, "169"=Retail, "238"=Warehouse/Industrial, "401"=Vacant Land, "160"=Hotel, "339"=Self-Storage, "148"=Medical Office, "373"=Duplex, "378"=Triplex/Quad, "139"=Small Retail/NNN. Do NOT pass text labels.' },
         minAcres: { type: 'number', description: 'Minimum lot size in acres' },
         maxAcres: { type: 'number', description: 'Maximum lot size in acres' },
         minValue: { type: 'number', description: 'Minimum assessed value in dollars' },
@@ -33,30 +33,58 @@ const tools = [
   },
   {
     name: 'get_property_details',
-    description: 'Get full property details including ownership, tax, sales, loans, valuations, climate risk, permits.',
-    input_schema: { type: 'object', properties: { attomId: { type: 'string' } }, required: ['attomId'] },
+    description: 'Get full property details by attom_id OR by address search. Returns ownership, tax assessments, sales history, current loans, AVM valuations, climate risk scores, building permits, flood zone, and school district data. Use this for site analysis, due diligence, investment analysis, owner research, and risk assessment. The property_use_standardized field contains a numeric ATTOM code — translate it to a CRE name before presenting to the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attomId: { type: 'string', description: 'ATTOM property ID' },
+        address: { type: 'string', description: 'Street address to search for (e.g., "1102 S Congress Ave")' },
+      },
+    },
   },
   {
     name: 'get_market_stats',
-    description: 'Get aggregate market statistics for an area.',
-    input_schema: { type: 'object', properties: { zipCode: { type: 'string' }, fipsCode: { type: 'string' }, propertyType: { type: 'string' } } },
+    description: 'Get aggregate market statistics for an area (ZIP code or FIPS). Returns average assessed values, sale prices, building areas, lot sizes, and year built. Use for market snapshots, area comparisons, and submarket analysis.',
+    input_schema: { type: 'object', properties: { zipCode: { type: 'string' }, fipsCode: { type: 'string' }, propertyType: { type: 'string', description: 'ATTOM numeric code to filter by property type' } } },
   },
   {
     name: 'spatial_query',
-    description: 'Find properties within a radius of a point.',
-    input_schema: { type: 'object', properties: { longitude: { type: 'number' }, latitude: { type: 'number' }, radiusMeters: { type: 'number' }, limit: { type: 'number' } }, required: ['longitude', 'latitude'] },
+    description: 'Find properties within a radius of a point (latitude/longitude). Use for comparable sales searches, nearby property analysis, and surrounding area context. Default radius is 1000m (~0.6 miles). For comp searches use: 1609m (1 mile), 4828m (3 miles), 8047m (5 miles).',
+    input_schema: { type: 'object', properties: { longitude: { type: 'number' }, latitude: { type: 'number' }, radiusMeters: { type: 'number', description: 'Search radius in meters. 1609=1mi, 4828=3mi, 8047=5mi' }, limit: { type: 'number' } }, required: ['longitude', 'latitude'] },
   },
 ];
 
 async function executeTool(toolName, toolInput) {
+  console.log(`[TOOL] ${toolName} called with:`, JSON.stringify(toolInput));
+
   switch (toolName) {
     case 'search_properties': {
       const bbox = toolInput.bbox ? parseBbox(toolInput.bbox) : null;
-      const filters = { ...toolInput }; delete filters.bbox; delete filters.limit; console.log("[SEARCH] filters:", JSON.stringify(filters));
-      return await propertyService.searchProperties({ bbox, filters, limit: toolInput.limit || 20 });
+      const filters = { ...toolInput }; delete filters.bbox; delete filters.limit;
+      console.log(`[SEARCH] Filters:`, JSON.stringify(filters));
+      const result = await propertyService.searchProperties({ bbox, filters, limit: toolInput.limit || 20 });
+      const count = Array.isArray(result.properties || result) ? (result.properties || result).length : 0;
+      console.log(`[SEARCH] Returned ${count} results`);
+      return result;
     }
-    case 'get_property_details':
+    case 'get_property_details': {
+      // Support address-based lookup: search first, then get details
+      if (toolInput.address && !toolInput.attomId) {
+        console.log(`[DETAILS] Address lookup: "${toolInput.address}"`);
+        const searchResult = await propertyService.searchProperties({
+          filters: {},
+          limit: 1,
+          addressSearch: toolInput.address,
+        });
+        const properties = searchResult.properties || searchResult;
+        if (Array.isArray(properties) && properties.length > 0 && properties[0].attomId) {
+          console.log(`[DETAILS] Found attomId: ${properties[0].attomId}`);
+          return await propertyService.getPropertyDetail(properties[0].attomId);
+        }
+        return { error: 'No property found matching address: ' + toolInput.address };
+      }
       return await propertyService.getPropertyDetail(toolInput.attomId);
+    }
     case 'get_market_stats':
       return await propertyService.getMarketStats(toolInput);
     case 'spatial_query':
@@ -70,6 +98,7 @@ async function chat(messages, context = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
 
+  // Build CRE-aware system prompt with optional runtime context
   const systemPrompt = buildSystemPrompt(context);
 
   // Collect attom_ids from tool results
