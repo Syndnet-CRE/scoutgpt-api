@@ -650,7 +650,7 @@ async function getComparableSales(attomId, options = {}) {
             (1 - ABS(c.year_built - s.year_built)::numeric / $4) * 15
           ELSE 7.5 END
         -- Recency (20%)
-        + (1 - EXTRACT(DAY FROM CURRENT_DATE - c.recording_date)::numeric / ($5 * 30.44)) * 20
+        + (1 - (CURRENT_DATE - c.recording_date::date)::numeric / ($5 * 30.44)) * 20
         -- Lot size (10%)
         + CASE WHEN s.area_lot_sf > 0 AND c.area_lot_sf > 0 THEN
             (1 - LEAST(ABS(c.area_lot_sf - s.area_lot_sf)::numeric / s.area_lot_sf, 1.0)) * 10
