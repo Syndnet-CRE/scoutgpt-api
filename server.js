@@ -25,6 +25,7 @@ app.use((req, res, next) => {
 app.use('/api/health', require('./routes/health'));
 app.use('/api/properties', require('./routes/properties'));
 app.use('/api/property', require('./routes/property'));
+app.use('/api', require('./routes/intelligence'));
 app.use('/api/layers', require('./routes/layers'));
 app.use('/api/chat', require('./routes/chat'));
 
