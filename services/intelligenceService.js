@@ -952,6 +952,29 @@ async function getDistressedProperties(options = {}) {
       WHERE attom_id = p.attom_id AND effective_date > CURRENT_DATE - INTERVAL '10 years'
     ) bp_count ON true
     WHERE p.fips_code = '48453' ${bboxFilter}
+    GROUP BY
+      p.attom_id,
+      p.address_full,
+      p.address_city,
+      p.address_zip,
+      p.property_use_standardized,
+      p.area_building,
+      p.year_built,
+      p.last_sale_price,
+      o.owner1_name_full,
+      o.is_absentee_owner,
+      o.company_flag,
+      o.ownership_transfer_date,
+      pv.estimated_value,
+      ta.assessed_value_total,
+      ta.tax_delinquent_year,
+      fc.id,
+      fc.foreclosure_recording_date,
+      fc.record_type,
+      fc.auction_date,
+      cl_sum.total_balance,
+      ls.is_distressed,
+      bp_count.cnt
     HAVING (
       CASE WHEN fc.id IS NOT NULL AND fc.foreclosure_recording_date > CURRENT_DATE - INTERVAL '2 years' THEN 30 ELSE 0 END +
       CASE WHEN ta.tax_delinquent_year IS NOT NULL THEN
