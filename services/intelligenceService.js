@@ -886,14 +886,33 @@ async function getDistressedProperties(options = {}) {
   const limitNum = Number(limit);
 
   let bboxFilter = '';
+  let bboxFilterCTE = '';
   const params = [];
 
   if (bbox) {
     bboxFilter = `AND p.longitude BETWEEN $1 AND $2 AND p.latitude BETWEEN $3 AND $4`;
+    bboxFilterCTE = `AND p.longitude BETWEEN $1 AND $2 AND p.latitude BETWEEN $3 AND $4`;
     params.push(bbox.west, bbox.east, bbox.south, bbox.north);
   }
 
   const query = `
+    -- CTE: Pre-filter to properties with at least one distress signal
+    WITH candidates AS (
+      SELECT p.attom_id
+      FROM properties p
+      LEFT JOIN foreclosure_records fc ON fc.attom_id = p.attom_id
+      LEFT JOIN tax_assessments ta ON ta.attom_id = p.attom_id
+      LEFT JOIN ownership o ON o.attom_id = p.attom_id AND o.ownership_sequence = 1
+      WHERE p.fips_code = '48453'
+        ${bboxFilterCTE}
+        AND (
+          fc.attom_id IS NOT NULL
+          OR ta.tax_delinquent_year IS NOT NULL
+          OR o.is_absentee_owner = true
+        )
+      GROUP BY p.attom_id
+      LIMIT 5000
+    )
     SELECT
       p.attom_id,
       p.address_full,
@@ -927,7 +946,8 @@ async function getDistressedProperties(options = {}) {
       ta.tax_delinquent_year,
       fc.record_type AS foreclosure_type,
       fc.auction_date
-    FROM properties p
+    FROM candidates c
+    JOIN properties p ON p.attom_id = c.attom_id
     JOIN ownership o ON o.attom_id = p.attom_id AND o.ownership_sequence = 1
     LEFT JOIN tax_assessments ta ON ta.attom_id = p.attom_id
       AND ta.tax_year = (SELECT MAX(tax_year) FROM tax_assessments WHERE attom_id = p.attom_id)
@@ -951,7 +971,6 @@ async function getDistressedProperties(options = {}) {
       SELECT COUNT(*) AS cnt FROM building_permits
       WHERE attom_id = p.attom_id AND effective_date > CURRENT_DATE - INTERVAL '10 years'
     ) bp_count ON true
-    WHERE p.fips_code = '48453' ${bboxFilter}
     GROUP BY
       p.attom_id,
       p.address_full,
