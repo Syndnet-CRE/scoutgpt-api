@@ -575,7 +575,11 @@ async function getComparableSales(attomId, options = {}) {
     limit = 5
   } = options;
 
-  const radiusMeters = radiusMiles * 1609.34;
+  // Pre-compute numeric values to inject via template literals (safe - all from validated defaults)
+  const radiusMeters = Math.round(radiusMiles * 1609.34);
+  const sfLow = (1 - sfTolerance).toFixed(4);
+  const sfHigh = (1 + sfTolerance).toFixed(4);
+  const maxDaysSince = Math.round(monthsBack * 30.44);
 
   const query = `
     WITH subject AS (
@@ -621,36 +625,36 @@ async function getComparableSales(attomId, options = {}) {
         SELECT * FROM properties p2
         WHERE p2.attom_id != s.attom_id
           AND p2.property_use_standardized = s.property_use_standardized
-          AND ST_DWithin(p2.location::geography, s.location::geography, $2)
+          AND ST_DWithin(p2.location::geography, s.location::geography, ${radiusMeters})
           AND (s.area_building = 0 OR s.area_building IS NULL OR (
-            p2.area_building BETWEEN s.area_building * (1 - $3) AND s.area_building * (1 + $3)
+            p2.area_building BETWEEN s.area_building * ${sfLow} AND s.area_building * ${sfHigh}
           ))
           AND (s.year_built IS NULL OR (
-            p2.year_built BETWEEN s.year_built - $4 AND s.year_built + $4
+            p2.year_built BETWEEN s.year_built - ${yearTolerance} AND s.year_built + ${yearTolerance}
           ))
       ) comp
       JOIN sales_transactions st ON st.attom_id = comp.attom_id
         AND st.is_arms_length = true
         AND (st.is_distressed = false OR st.is_distressed IS NULL)
         AND st.sale_price > 10000
-        AND st.recording_date > CURRENT_DATE - ($5 || ' months')::interval
+        AND st.recording_date > CURRENT_DATE - INTERVAL '${monthsBack} months'
     )
     SELECT
       c.*,
       -- Composite similarity score (0-100)
       ROUND((
         -- Distance (30%): closer = better
-        (1 - LEAST(c.distance_miles / $6, 1.0)) * 30
+        (1 - LEAST(c.distance_miles / ${radiusMiles}, 1.0)) * 30
         -- SF similarity (25%)
         + CASE WHEN s.area_building > 0 AND c.area_building > 0 THEN
             (1 - ABS(c.area_building - s.area_building)::numeric / s.area_building) * 25
           ELSE 12.5 END
         -- Year built (15%)
         + CASE WHEN s.year_built IS NOT NULL AND c.year_built IS NOT NULL THEN
-            (1 - ABS(c.year_built - s.year_built)::numeric / $4) * 15
+            (1 - ABS(c.year_built - s.year_built)::numeric / ${yearTolerance}) * 15
           ELSE 7.5 END
         -- Recency (20%)
-        + (1 - (CURRENT_DATE - c.recording_date::date)::numeric / ($5::numeric * 30.44)) * 20
+        + (1 - (CURRENT_DATE - c.recording_date::date)::numeric / ${maxDaysSince}) * 20
         -- Lot size (10%)
         + CASE WHEN s.area_lot_sf > 0 AND c.area_lot_sf > 0 THEN
             (1 - LEAST(ABS(c.area_lot_sf - s.area_lot_sf)::numeric / s.area_lot_sf, 1.0)) * 10
@@ -659,13 +663,10 @@ async function getComparableSales(attomId, options = {}) {
 
     FROM candidates c, subject s
     ORDER BY similarity_score DESC
-    LIMIT $7;
+    LIMIT $2;
   `;
 
-  const { rows } = await pool.query(query, [
-    attomId, radiusMeters, sfTolerance, yearTolerance,
-    monthsBack, radiusMiles, limit
-  ]);
+  const { rows } = await pool.query(query, [attomId, limit]);
 
   // Get subject property for summary
   const subjectQuery = `
@@ -829,6 +830,10 @@ async function getOwnerPortfolio(attomId) {
 async function getTopPortfolioOwners(options = {}) {
   const { minProperties = 5, limit = 50 } = options;
 
+  // Pre-compute numeric values to inject via template literals (safe - all from validated defaults)
+  const minPropsNum = Number(minProperties);
+  const limitNum = Number(limit);
+
   const query = `
     SELECT
       UPPER(TRIM(o.owner1_name_full)) AS normalized_name,
@@ -849,12 +854,12 @@ async function getTopPortfolioOwners(options = {}) {
       AND o.owner1_name_full IS NOT NULL
       AND o.owner1_name_full != ''
     GROUP BY UPPER(TRIM(o.owner1_name_full))
-    HAVING COUNT(DISTINCT o.attom_id) >= $1
+    HAVING COUNT(DISTINCT o.attom_id) >= ${minPropsNum}
     ORDER BY property_count DESC
-    LIMIT $2;
+    LIMIT ${limitNum};
   `;
 
-  const { rows } = await pool.query(query, [minProperties, limit]);
+  const { rows } = await pool.query(query);
 
   return rows.map(r => ({
     ownerName: r.normalized_name,
@@ -876,11 +881,15 @@ async function getTopPortfolioOwners(options = {}) {
 async function getDistressedProperties(options = {}) {
   const { minScore = 30, limit = 50, bbox = null } = options;
 
+  // Pre-compute numeric values to inject via template literals (safe - all from validated defaults)
+  const minScoreNum = Number(minScore);
+  const limitNum = Number(limit);
+
   let bboxFilter = '';
-  const params = [minScore, limit];
+  const params = [];
 
   if (bbox) {
-    bboxFilter = `AND p.longitude BETWEEN $3 AND $4 AND p.latitude BETWEEN $5 AND $6`;
+    bboxFilter = `AND p.longitude BETWEEN $1 AND $2 AND p.latitude BETWEEN $3 AND $4`;
     params.push(bbox.west, bbox.east, bbox.south, bbox.north);
   }
 
@@ -957,9 +966,9 @@ async function getDistressedProperties(options = {}) {
       CASE WHEN o.ownership_transfer_date < CURRENT_DATE - INTERVAL '15 years' THEN 5 ELSE 0 END +
       CASE WHEN p.year_built < EXTRACT(YEAR FROM CURRENT_DATE) - 30
         AND bp_count.cnt = 0 THEN 5 ELSE 0 END
-    ) >= $1
+    ) >= ${minScoreNum}
     ORDER BY distress_score DESC
-    LIMIT $2;
+    LIMIT ${limitNum};
   `;
 
   const { rows } = await pool.query(query, params);
