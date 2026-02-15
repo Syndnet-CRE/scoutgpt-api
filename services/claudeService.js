@@ -62,7 +62,7 @@ async function executeTool(toolName, toolInput) {
       const bbox = toolInput.bbox ? parseBbox(toolInput.bbox) : null;
       const filters = { ...toolInput }; delete filters.bbox; delete filters.limit;
       console.log(`[SEARCH] Filters:`, JSON.stringify(filters));
-      const result = await propertyService.searchProperties({ bbox, filters, limit: toolInput.limit || 20 });
+      const result = await propertyService.searchProperties({ bbox, filters, limit: toolInput.limit || 15 });
       const count = Array.isArray(result.properties || result) ? (result.properties || result).length : 0;
       console.log(`[SEARCH] Returned ${count} results`);
       return result;
@@ -135,6 +135,8 @@ async function chat(messages, context = {}) {
         if (resultStr.length > 8000) {
           if (result.properties && Array.isArray(result.properties)) {
             result.properties = result.properties.slice(0, 20);
+            result.truncated = true;
+            result.originalCount = result.properties.length;
             resultStr = JSON.stringify(result);
           }
           if (resultStr.length > 12000) {

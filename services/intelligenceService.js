@@ -569,162 +569,85 @@ async function getPropertyIntelligence(attomId) {
 async function getComparableSales(attomId, options = {}) {
   const {
     radiusMiles = 3,
-    sfTolerance = 0.3,      // ±30%
+    sfTolerance = 0.3,
     yearTolerance = 15,
     monthsBack = 24,
-    limit = 5
+    limit = 10
   } = options;
 
-  // Pre-compute numeric values to inject via template literals (safe - all from validated defaults)
   const radiusMeters = Math.round(radiusMiles * 1609.34);
-  const sfLow = (1 - sfTolerance).toFixed(4);
-  const sfHigh = (1 + sfTolerance).toFixed(4);
+  const sfLow = (1 - sfTolerance).toFixed(2);
+  const sfHigh = (1 + sfTolerance).toFixed(2);
   const maxDaysSince = Math.round(monthsBack * 30.44);
 
   const query = `
     WITH subject AS (
-      SELECT
-        attom_id,
-        location,
-        property_use_standardized,
-        area_building,
-        area_lot_sf,
-        year_built,
-        address_full
-      FROM properties
-      WHERE attom_id = $1
+      SELECT p.attom_id, p.address_full, p.latitude, p.longitude, p.location,
+             p.area_building, p.year_built, p.property_use_standardized,
+             p.address_city, p.address_zip
+      FROM properties p
+      WHERE p.attom_id = $1
     ),
-    candidates AS (
+    comps AS (
       SELECT
-        comp.attom_id,
-        comp.address_full,
-        comp.address_city,
-        comp.address_zip,
-        comp.area_building,
-        comp.area_lot_sf,
-        comp.year_built,
-        comp.property_use_standardized,
-        st.transaction_id,
+        p2.attom_id,
+        p2.address_full,
+        p2.address_city,
+        p2.address_zip,
+        p2.latitude,
+        p2.longitude,
+        p2.area_building,
+        p2.area_lot_acres,
+        p2.year_built,
+        p2.property_use_standardized,
+        p2.bedrooms_count,
+        p2.bath_count,
+        p2.stories_count,
         st.sale_price,
         st.recording_date,
-        st.is_foreclosure_auction,
+        st.is_arms_length,
         st.grantor1_name_full,
         st.grantee1_name_full,
-        -- Distance in miles
-        ROUND((ST_Distance(comp.location::geography, s.location::geography) / 1609.34)::numeric, 2) AS distance_miles,
-        -- Price per SF
-        CASE WHEN comp.area_building > 0 THEN
-          ROUND((st.sale_price / comp.area_building)::numeric, 2)
-        ELSE NULL END AS price_per_sf,
-        -- Price per acre
-        CASE WHEN comp.area_lot_sf > 0 THEN
-          ROUND((st.sale_price / (comp.area_lot_sf / 43560.0))::numeric, 0)
-        ELSE NULL END AS price_per_acre
+        ROUND((ST_Distance(p2.location::geography, s.location::geography) / 1609.34)::numeric, 2) AS distance_miles,
+        CASE WHEN p2.area_building > 0 THEN ROUND((st.sale_price / p2.area_building)::numeric, 2) ELSE NULL END AS price_per_sf
       FROM subject s
       CROSS JOIN LATERAL (
-        SELECT * FROM properties p2
+        SELECT p2.*
+        FROM properties p2
         WHERE p2.attom_id != s.attom_id
-          AND p2.property_use_standardized = s.property_use_standardized
+          AND p2.location IS NOT NULL
+          AND s.location IS NOT NULL
           AND ST_DWithin(p2.location::geography, s.location::geography, ${radiusMeters})
-          AND (s.area_building = 0 OR s.area_building IS NULL OR (
-            p2.area_building BETWEEN s.area_building * ${sfLow} AND s.area_building * ${sfHigh}
-          ))
-          AND (s.year_built IS NULL OR (
-            p2.year_built BETWEEN s.year_built - ${yearTolerance} AND s.year_built + ${yearTolerance}
-          ))
-      ) comp
-      JOIN sales_transactions st ON st.attom_id = comp.attom_id
+          AND p2.area_building BETWEEN s.area_building * ${sfLow} AND s.area_building * ${sfHigh}
+          AND p2.year_built BETWEEN s.year_built - ${yearTolerance} AND s.year_built + ${yearTolerance}
+      ) p2
+      INNER JOIN sales_transactions st ON st.attom_id = p2.attom_id
         AND st.is_arms_length = true
-        AND (st.is_distressed = false OR st.is_distressed IS NULL)
-        AND st.sale_price > 10000
+        AND st.sale_price > 0
         AND st.recording_date > CURRENT_DATE - INTERVAL '${monthsBack} months'
     )
-    SELECT
-      c.*,
-      -- Composite similarity score (0-100)
+    SELECT c.*,
       ROUND((
-        -- Distance (30%): closer = better
-        (1 - LEAST(c.distance_miles / ${radiusMiles}, 1.0)) * 30
-        -- SF similarity (25%)
-        + CASE WHEN s.area_building > 0 AND c.area_building > 0 THEN
-            (1 - ABS(c.area_building - s.area_building)::numeric / s.area_building) * 25
-          ELSE 12.5 END
-        -- Year built (15%)
-        + CASE WHEN s.year_built IS NOT NULL AND c.year_built IS NOT NULL THEN
-            (1 - ABS(c.year_built - s.year_built)::numeric / ${yearTolerance}) * 15
-          ELSE 7.5 END
-        -- Recency (20%)
-        + (1 - (CURRENT_DATE - c.recording_date::date)::numeric / ${maxDaysSince}) * 20
-        -- Lot size (10%)
-        + CASE WHEN s.area_lot_sf > 0 AND c.area_lot_sf > 0 THEN
-            (1 - LEAST(ABS(c.area_lot_sf - s.area_lot_sf)::numeric / s.area_lot_sf, 1.0)) * 10
-          ELSE 5 END
+        (1 - LEAST(c.distance_miles / ${radiusMiles}.0, 1.0)) * 30 +
+        CASE WHEN c.area_building > 0 AND (SELECT area_building FROM subject) > 0
+          THEN (1 - ABS(c.area_building - (SELECT area_building FROM subject))::numeric / GREATEST((SELECT area_building FROM subject), 1)) * 25
+          ELSE 0 END +
+        (1 - ABS(c.year_built - (SELECT year_built FROM subject))::numeric / ${yearTolerance}.0) * 15 +
+        CASE WHEN c.property_use_standardized = (SELECT property_use_standardized FROM subject) THEN 10 ELSE 0 END +
+        (1 - LEAST((CURRENT_DATE - c.recording_date::date)::numeric / ${maxDaysSince}.0, 1.0)) * 20
       )::numeric, 1) AS similarity_score
-
-    FROM candidates c, subject s
+    FROM comps c
     ORDER BY similarity_score DESC
     LIMIT $2;
   `;
 
-  const { rows } = await pool.query(query, [attomId, limit]);
-
-  // Get subject property for summary
-  const subjectQuery = `
-    SELECT address_full, area_building, area_lot_sf, year_built,
-           property_use_standardized, last_sale_price, last_sale_date
-    FROM properties WHERE attom_id = $1
-  `;
-  const { rows: subjectRows } = await pool.query(subjectQuery, [attomId]);
-  const subject = subjectRows[0] || {};
-
-  // Compute summary stats
-  const prices = rows.map(r => Number(r.sale_price)).filter(p => p > 0);
-  const priceSfs = rows.map(r => Number(r.price_per_sf)).filter(p => p > 0);
-
-  return {
-    subject: {
-      attomId,
-      addressFull: subject.address_full,
-      areaBuilding: subject.area_building,
-      areaLotSf: subject.area_lot_sf,
-      yearBuilt: subject.year_built,
-      propertyUse: subject.property_use_standardized,
-      lastSalePrice: Number(subject.last_sale_price) || null,
-      lastSaleDate: subject.last_sale_date,
-    },
-    parameters: {
-      radiusMiles,
-      sfTolerance: `±${sfTolerance * 100}%`,
-      yearTolerance: `±${yearTolerance} years`,
-      monthsBack,
-    },
-    comps: rows.map(r => ({
-      attomId: r.attom_id,
-      addressFull: r.address_full,
-      city: r.address_city,
-      zip: r.address_zip,
-      salePrice: Number(r.sale_price),
-      saleDate: r.recording_date,
-      areaBuilding: r.area_building,
-      areaLotSf: r.area_lot_sf,
-      yearBuilt: r.year_built,
-      propertyUse: r.property_use_standardized,
-      distanceMiles: Number(r.distance_miles),
-      pricePerSf: Number(r.price_per_sf) || null,
-      pricePerAcre: Number(r.price_per_acre) || null,
-      similarityScore: Number(r.similarity_score),
-      grantor: r.grantor1_name_full,
-      grantee: r.grantee1_name_full,
-    })),
-    summary: {
-      compCount: rows.length,
-      avgSalePrice: prices.length ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length) : null,
-      medianSalePrice: prices.length ? prices.sort((a, b) => a - b)[Math.floor(prices.length / 2)] : null,
-      priceRangeLow: prices.length ? Math.min(...prices) : null,
-      priceRangeHigh: prices.length ? Math.max(...prices) : null,
-      avgPricePerSf: priceSfs.length ? Math.round(priceSfs.reduce((a, b) => a + b, 0) / priceSfs.length * 100) / 100 : null,
-    }
-  };
+  try {
+    const { rows } = await pool.query(query, [attomId, limit]);
+    return rows;
+  } catch (error) {
+    console.error('[INTELLIGENCE] Comps query error:', error.message);
+    return [];
+  }
 }
 
 
