@@ -1,6 +1,15 @@
 const pool = require('../db/pool');
 const { normalizeRow, normalizeRows } = require('../utils/normalize');
 
+// Zoning category to local code mapping
+const ZONING_CATEGORY_MAP = {
+  residential: ['SF-1','SF-2','SF-3','SF-4A','SF-4B','SF-5','SF-6','MF-1','MF-2','MF-3','MF-4','MF-5','MF-6','MH','RR','LA','R-1','R-2','R-3'],
+  commercial: ['GR','CR','CS','CS-1','CH','LR','NO','W/LO','CBD','C-1','C-2','C-3'],
+  industrial: ['LI','MI','IP','W/LO-I','I-1','I-2'],
+  mixed_use: ['DMU','MU','PUD','TOD','VMU','V'],
+  agricultural: ['AG','DR'],
+};
+
 async function searchProperties({ bbox, filters = {}, limit = 500 }) {
   const params = [];
   const conditions = [];
@@ -27,9 +36,11 @@ async function searchProperties({ bbox, filters = {}, limit = 500 }) {
   if (filters.recentSales) {
     conditions.push(`p.last_sale_date >= NOW() - INTERVAL '12 months'`);
   }
+  // propertyType: support multiple codes via ANY() array match
   if (filters.propertyType) {
-    conditions.push(`p.property_use_standardized = $${paramIndex}`);
-    params.push(filters.propertyType);
+    const codes = String(filters.propertyType).split(',').map(c => c.trim());
+    conditions.push(`p.property_use_standardized = ANY($${paramIndex}::text[])`);
+    params.push(codes);
     paramIndex++;
   }
   if (filters.minAcres) {
@@ -58,7 +69,87 @@ async function searchProperties({ bbox, filters = {}, limit = 500 }) {
     paramIndex++;
   }
 
+  // GIS Filters: Zoning
+  if (filters.zoningCodes) {
+    const codes = Array.isArray(filters.zoningCodes) ? filters.zoningCodes : String(filters.zoningCodes).split(',').map(c => c.trim());
+    conditions.push(`p.zoning_local = ANY($${paramIndex}::text[])`);
+    params.push(codes);
+    paramIndex++;
+  }
+  if (filters.zoningCategory) {
+    const category = String(filters.zoningCategory).toLowerCase();
+    const codes = ZONING_CATEGORY_MAP[category];
+    if (codes && codes.length > 0) {
+      conditions.push(`p.zoning_local = ANY($${paramIndex}::text[])`);
+      params.push(codes);
+      paramIndex++;
+    }
+  }
+  if (filters.jurisdiction) {
+    conditions.push(`p.zoning_jurisdiction ILIKE $${paramIndex}`);
+    params.push(`%${filters.jurisdiction}%`);
+    paramIndex++;
+  }
+
+  // GIS Filters: Flood
+  if (filters.excludeFloodplain) {
+    conditions.push(`(p.in_floodplain = false OR p.in_floodplain IS NULL)`);
+  }
+  if (filters.floodZones) {
+    const zones = Array.isArray(filters.floodZones) ? filters.floodZones : String(filters.floodZones).split(',').map(z => z.trim());
+    conditions.push(`p.flood_zone = ANY($${paramIndex}::text[])`);
+    params.push(zones);
+    paramIndex++;
+  }
+
+  // GIS Filters: Infrastructure
+  if (filters.maxWaterDistanceFt) {
+    conditions.push(`p.nearest_water_ft <= $${paramIndex}`);
+    params.push(filters.maxWaterDistanceFt);
+    paramIndex++;
+  }
+  if (filters.minWaterDiameterIn) {
+    conditions.push(`p.nearest_water_diam >= $${paramIndex}`);
+    params.push(filters.minWaterDiameterIn);
+    paramIndex++;
+  }
+  if (filters.maxSewerDistanceFt) {
+    conditions.push(`p.nearest_sewer_ft <= $${paramIndex}`);
+    params.push(filters.maxSewerDistanceFt);
+    paramIndex++;
+  }
+  if (filters.maxStormDistanceFt) {
+    conditions.push(`p.nearest_storm_ft <= $${paramIndex}`);
+    params.push(filters.maxStormDistanceFt);
+    paramIndex++;
+  }
+
+  // City filter (uses address_city)
+  if (filters.city) {
+    conditions.push(`p.address_city ILIKE $${paramIndex}`);
+    params.push(`%${filters.city}%`);
+    paramIndex++;
+  }
+
   const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+
+  // Sort support
+  const validSortColumns = {
+    nearest_water_ft: 'p.nearest_water_ft',
+    nearest_sewer_ft: 'p.nearest_sewer_ft',
+    nearest_storm_ft: 'p.nearest_storm_ft',
+    area_lot_acres: 'p.area_lot_acres',
+    tax_assessed_value_total: 'p.tax_assessed_value_total',
+    area_building: 'p.area_building',
+    last_sale_price: 'p.last_sale_price',
+    year_built: 'p.year_built',
+  };
+  let orderClause = '';
+  if (filters.sortBy && validSortColumns[filters.sortBy]) {
+    const direction = filters.sortOrder === 'desc' ? 'DESC' : 'ASC';
+    orderClause = `ORDER BY ${validSortColumns[filters.sortBy]} ${direction} NULLS LAST`;
+  }
+
   params.push(Math.min(limit, 2000));
 
   const query = `
@@ -66,9 +157,13 @@ async function searchProperties({ bbox, filters = {}, limit = 500 }) {
       p.address_city, p.address_state, p.address_zip, p.latitude, p.longitude,
       p.property_use_standardized, p.year_built, p.bedrooms_count, p.bath_count,
       p.area_building, p.area_lot_sf, p.area_lot_acres, p.tax_assessed_value_total,
-      p.last_sale_date, p.last_sale_price
+      p.last_sale_date, p.last_sale_price,
+      p.zoning_local, p.zoning_jurisdiction, p.flood_zone, p.flood_zone_desc, p.in_floodplain,
+      p.nearest_water_ft, p.nearest_water_diam, p.nearest_water_material,
+      p.nearest_sewer_ft, p.nearest_sewer_diam, p.nearest_storm_ft, p.nearest_storm_diam
     FROM properties p
     ${whereClause}
+    ${orderClause}
     LIMIT $${paramIndex}
   `;
 
