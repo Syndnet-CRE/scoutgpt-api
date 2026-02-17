@@ -9,26 +9,13 @@ const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const tools = [
   {
     name: 'search_properties',
-    description: `Search for properties in Travis County with filters. Returns up to \`limit\` properties with attomId, address, property type, year built, beds/baths, building area, lot size, assessed value, last sale date/price, plus GIS data (zoning, flood zone, infrastructure distances). Use bbox for map viewport searches, zipCode for ZIP-based searches.
-
-CRITICAL — propertyType MUST use these ATTOM numeric codes (comma-separated for asset classes):
-• Multifamily/Apartments: "369,373,378,370,368" (includes apartments, duplexes, triplexes, large complexes)
-• Office: "167,361,178" (mid-size, urban, small office)
-• Retail: "169,139,359,184" (shopping centers, strip retail, power centers, malls)
-• Industrial/Warehouse: "238,210,229,212" (light industrial, heavy industrial, distribution)
-• Land/Vacant: "401,120,270" (residential lots, commercial land)
-• Hotel/Hospitality: "160,161" (hotels, motels, resorts)
-• Self-Storage: "339"
-• Medical Office: "148"
-
-NEVER pass text labels like "multifamily" or "COMMERCIAL" — ONLY numeric codes. When user mentions an asset class, ALWAYS pass the full comma-separated code list for that class.`,
+    description: 'Search for properties in Travis County with filters. Returns up to `limit` properties with attomId, address, property type, year built, beds/baths, building area, lot size, assessed value, last sale date/price. Use bbox for map viewport searches, zipCode for ZIP-based searches. Combine filters for targeted results. IMPORTANT: propertyType accepts ATTOM numeric codes — use "369" for apartments/multifamily, "167" for office, "169" for retail, "238" for industrial/warehouse, "401" for vacant land, "160" for hotel, "339" for self-storage, "148" for medical office. Never pass text labels like "COMMERCIAL" — use numeric codes only.',
     input_schema: {
       type: 'object',
       properties: {
         bbox: { type: 'string', description: 'Bounding box as "minLng,minLat,maxLng,maxLat". Use for map viewport searches.' },
         zipCode: { type: 'string', description: 'ZIP code (e.g., "78701")' },
-        city: { type: 'string', description: 'City name filter (partial match, e.g., "Austin", "Round Rock")' },
-        propertyType: { type: 'string', description: 'ATTOM numeric codes, comma-separated. REQUIRED when user specifies asset class. Use FULL code lists: Multifamily="369,373,378,370,368", Office="167,361,178", Retail="169,139,359,184", Industrial="238,210,229,212", Land="401,120,270", Hotel="160,161", Storage="339", Medical="148". NEVER pass text labels — only numeric codes.' },
+        propertyType: { type: 'string', description: 'ATTOM numeric property code. Key codes: "369"=Apartment, "167"=Office, "169"=Retail, "238"=Warehouse/Industrial, "401"=Vacant Land, "160"=Hotel, "339"=Self-Storage, "148"=Medical Office, "373"=Duplex, "378"=Triplex/Quad, "139"=Small Retail/NNN. Do NOT pass text labels.' },
         minAcres: { type: 'number', description: 'Minimum lot size in acres' },
         maxAcres: { type: 'number', description: 'Maximum lot size in acres' },
         minValue: { type: 'number', description: 'Minimum assessed value in dollars' },
@@ -40,17 +27,6 @@ NEVER pass text labels like "multifamily" or "COMMERCIAL" — ONLY numeric codes
         taxDelinquent: { type: 'boolean', description: 'Filter to tax delinquent properties' },
         recentSales: { type: 'boolean', description: 'Filter to properties sold in last 12 months' },
         highEquity: { type: 'boolean', description: 'Filter to properties with high available equity' },
-        zoningCodes: { type: 'string', description: 'Local zoning codes, comma-separated (e.g., "GR,CS,LI"). Matches zoning_local column.' },
-        zoningCategory: { type: 'string', description: 'Broad zoning category: "residential", "commercial", "industrial", "mixed_use", or "agricultural". Maps to specific local zoning codes.' },
-        jurisdiction: { type: 'string', description: 'Zoning jurisdiction filter (partial match, e.g., "Austin", "Travis County")' },
-        excludeFloodplain: { type: 'boolean', description: 'Exclude properties in floodplain (in_floodplain = false or null)' },
-        floodZones: { type: 'string', description: 'FEMA flood zones, comma-separated (e.g., "X,X500"). Common zones: X (minimal risk), A, AE, AO (high risk).' },
-        maxWaterDistanceFt: { type: 'number', description: 'Maximum distance to nearest water line in feet' },
-        minWaterDiameterIn: { type: 'number', description: 'Minimum water line diameter in inches' },
-        maxSewerDistanceFt: { type: 'number', description: 'Maximum distance to nearest sewer line in feet' },
-        maxStormDistanceFt: { type: 'number', description: 'Maximum distance to nearest storm drain in feet' },
-        sortBy: { type: 'string', description: 'Sort results by: nearest_water_ft, nearest_sewer_ft, nearest_storm_ft, area_lot_acres, tax_assessed_value_total, area_building, last_sale_price, year_built' },
-        sortOrder: { type: 'string', description: 'Sort direction: "asc" (default) or "desc"' },
         limit: { type: 'number', description: 'Number of results to return. Default 15, max 25.' },
       },
     },

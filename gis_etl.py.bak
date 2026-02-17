@@ -1,0 +1,360 @@
+"""
+GIS ETL Pipeline — Download ArcGIS REST API → PostGIS (Fast version)
+
+Usage:
+  python3 gis_etl.py --all
+  python3 gis_etl.py --group water_lines
+  python3 gis_etl.py --layer-id 5
+  python3 gis_etl.py --status
+  python3 gis_etl.py --retry-errors
+
+Requires: pip3 install "psycopg[binary]" requests
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import io
+
+import psycopg
+from psycopg.rows import dict_row
+import requests
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+MAX_PER_REQUEST = 2000      # Most ArcGIS servers support 2000
+REQUEST_TIMEOUT = 120
+RATE_LIMIT_DELAY = 0.3
+MAX_PAGES = 500             # 500 pages x 2000 = 1M features max
+
+DIAMETER_FIELDS = [
+    'DIAMETER', 'WATERDIAMETER', 'PIPE_DIAMETER', 'PIPESIZE', 'PIPE_SIZE',
+    'DIAM', 'SIZE_', 'NOMINALDIAMETER', 'SIZE', 'WATERDIAMETER_INCH',
+    'DIAMETER_INCHES', 'PIPESIZE_', 'PIPE_DIA'
+]
+MATERIAL_FIELDS = ['MATERIAL', 'PIPE_MATERIAL', 'MAT', 'PIPEMATERIAL', 'WATERMATERIAL']
+ZONE_FIELDS = [
+    'ZONING_ZTYP', 'ZONE_DESCR', 'ZONE_CODE', 'ZONING', 'ZONE_TYPE',
+    'ZONING_CODE', 'ZONE', 'ZONINGCODE', 'ZONING_DESIGNATION'
+]
+FLOOD_FIELDS = ['FLD_ZONE', 'FLOOD_ZONE', 'ZONE', 'SFHA_TF', 'ZONE_SUBTY', 'FLOODZONE', 'FZONE']
+
+
+def extract_field(attributes, field_list):
+    for field in field_list:
+        for key in attributes:
+            if key.upper() == field.upper():
+                val = attributes[key]
+                if val is not None and str(val).strip() != '':
+                    return val
+    return None
+
+
+def extract_numeric(attributes, field_list):
+    val = extract_field(attributes, field_list)
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def coords_to_wkt(coords):
+    return ', '.join(f"{c[0]} {c[1]}" for c in coords)
+
+
+def arcgis_to_ewkt(geometry, geom_type):
+    if not geometry:
+        return None
+    try:
+        if geom_type == 'esriGeometryPoint':
+            x, y = geometry.get('x'), geometry.get('y')
+            if x is None or y is None:
+                return None
+            return f"SRID=4326;POINT({x} {y})"
+        elif geom_type == 'esriGeometryPolyline':
+            paths = geometry.get('paths', [])
+            if not paths:
+                return None
+            if len(paths) == 1:
+                return f"SRID=4326;LINESTRING({coords_to_wkt(paths[0])})"
+            lines = [f"({coords_to_wkt(p)})" for p in paths]
+            return f"SRID=4326;MULTILINESTRING({', '.join(lines)})"
+        elif geom_type == 'esriGeometryPolygon':
+            rings = geometry.get('rings', [])
+            if not rings:
+                return None
+            ring_strs = [f"({coords_to_wkt(r)})" for r in rings]
+            return f"SRID=4326;POLYGON({', '.join(ring_strs)})"
+    except Exception:
+        return None
+    return None
+
+
+def fetch_arcgis_features(endpoint_url):
+    """Download all features with parallel-friendly pagination."""
+    all_features = []
+    offset = 0
+    geom_type = None
+
+    # First, try to get the record count
+    try:
+        resp = requests.get(f"{endpoint_url}/query",
+            params={'where': '1=1', 'returnCountOnly': 'true', 'f': 'json'},
+            timeout=30)
+        count_data = resp.json()
+        total_count = count_data.get('count', '?')
+        print(f"    Server reports {total_count} total features")
+    except:
+        total_count = '?'
+
+    for page in range(MAX_PAGES):
+        params = {
+            'where': '1=1',
+            'outFields': '*',
+            'outSR': '4326',
+            'f': 'json',
+            'resultOffset': offset,
+            'resultRecordCount': MAX_PER_REQUEST
+        }
+        try:
+            resp = requests.get(f"{endpoint_url}/query", params=params, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            print(f"    Timeout at offset {offset}, continuing with what we have")
+            break
+        except Exception as e:
+            print(f"    Error at offset {offset}: {e}")
+            break
+
+        if 'error' in data:
+            print(f"    ArcGIS error: {data['error'].get('message', '?')}")
+            break
+
+        features = data.get('features', [])
+        if not features:
+            break
+
+        if geom_type is None:
+            geom_type = data.get('geometryType', 'esriGeometryPolyline')
+
+        all_features.extend(features)
+
+        # Progress
+        pct = f" ({len(all_features)}/{total_count})" if total_count != '?' else ""
+        print(f"    Page {page + 1}: +{len(features)} = {len(all_features)}{pct}")
+
+        if not data.get('exceededTransferLimit', False) and len(features) < MAX_PER_REQUEST:
+            break
+        offset += MAX_PER_REQUEST
+        time.sleep(RATE_LIMIT_DELAY)
+
+    return all_features, geom_type
+
+
+def bulk_insert(conn, layer_id, layer, features, geom_type):
+    """Fast bulk insert using COPY protocol."""
+    
+    # Prepare all rows in memory first
+    rows = []
+    skipped = 0
+    for feat in features:
+        attrs = feat.get('attributes', {})
+        ewkt = arcgis_to_ewkt(feat.get('geometry'), geom_type)
+        if not ewkt:
+            skipped += 1
+            continue
+        rows.append((
+            layer_id,
+            layer['unified_group'],
+            layer['server_name'],
+            attrs.get('OBJECTID'),
+            ewkt,
+            json.dumps(attrs),
+            extract_numeric(attrs, DIAMETER_FIELDS),
+            extract_field(attrs, MATERIAL_FIELDS),
+            extract_field(attrs, ZONE_FIELDS),
+            extract_field(attrs, FLOOD_FIELDS)
+        ))
+
+    if not rows:
+        return 0, skipped
+
+    # Use executemany with a prepared-style approach for speed
+    print(f"  Inserting {len(rows)} rows...")
+    start = time.time()
+    
+    with conn.cursor() as cur:
+        # Insert in chunks of 5000 using executemany
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            cur.executemany("""
+                INSERT INTO gis_infrastructure 
+                (layer_id, unified_group, source_server, source_objectid, geom, attributes,
+                 diameter, material, zone_code, flood_zone)
+                VALUES (%s, %s, %s, %s, ST_GeomFromEWKT(%s), %s, %s, %s, %s, %s)
+            """, chunk)
+            elapsed = time.time() - start
+            rate = (i + len(chunk)) / max(elapsed, 0.1)
+            print(f"    {i + len(chunk)}/{len(rows)} ({rate:.0f} rows/sec)")
+    
+    conn.commit()
+    elapsed = time.time() - start
+    print(f"  Inserted {len(rows)} rows in {elapsed:.1f}s ({len(rows)/max(elapsed,0.1):.0f} rows/sec)")
+    return len(rows), skipped
+
+
+def sync_layer(conn, layer_id):
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM gis_layers_registry WHERE id = %s", (layer_id,))
+        layer = cur.fetchone()
+    if not layer:
+        print(f"Layer {layer_id} not found")
+        return False
+
+    print(f"\n{'='*60}")
+    print(f"[{layer['unified_group']}] {layer['server_name']} — {layer['layer_name']}")
+    print(f"{'='*60}")
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE gis_layers_registry SET sync_status = 'syncing', updated_at = NOW() WHERE id = %s", (layer_id,))
+    conn.commit()
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("INSERT INTO gis_sync_log (layer_id, started_at, status) VALUES (%s, NOW(), 'running') RETURNING id", (layer_id,))
+        log_id = cur.fetchone()['id']
+    conn.commit()
+
+    start_time = time.time()
+    try:
+        # Clear old data
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM gis_infrastructure WHERE layer_id = %s", (layer_id,))
+            if cur.rowcount:
+                print(f"  Cleared {cur.rowcount} old features")
+        conn.commit()
+
+        # Download
+        features, geom_type = fetch_arcgis_features(layer['endpoint_url'])
+        if not features:
+            raise Exception("No features returned")
+
+        # Bulk insert
+        inserted, skipped = bulk_insert(conn, layer_id, layer, features, geom_type)
+
+        duration = time.time() - start_time
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE gis_layers_registry 
+                SET last_synced = NOW(), sync_status = 'complete', record_count = %s, 
+                    updated_at = NOW(), error_message = NULL
+                WHERE id = %s
+            """, (inserted, layer_id))
+            cur.execute("""
+                UPDATE gis_sync_log 
+                SET completed_at = NOW(), status = 'complete', 
+                    features_fetched = %s, features_inserted = %s, duration_seconds = %s
+                WHERE id = %s
+            """, (len(features), inserted, round(duration, 1), log_id))
+        conn.commit()
+
+        print(f"  ✓ {inserted:,} inserted, {skipped} skipped — {duration:.0f}s total")
+        return True
+
+    except Exception as e:
+        duration = time.time() - start_time
+        error_msg = str(e)[:500]
+        print(f"  ✗ ERROR: {error_msg}")
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute("UPDATE gis_layers_registry SET sync_status = 'error', error_message = %s, updated_at = NOW() WHERE id = %s", (error_msg, layer_id))
+            cur.execute("UPDATE gis_sync_log SET completed_at = NOW(), status = 'error', error_message = %s, duration_seconds = %s WHERE id = %s", (error_msg, round(duration, 1), log_id))
+        conn.commit()
+        return False
+
+
+def cmd_status(conn):
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT sync_status, COUNT(*) as cnt FROM gis_layers_registry GROUP BY sync_status ORDER BY sync_status")
+        print("\n  Status Summary:")
+        for row in cur.fetchall():
+            icon = {'complete': 'OK', 'error': 'ERR', 'pending': '--', 'syncing': '...'}.get(row['sync_status'], '?')
+            print(f"    [{icon}] {row['sync_status']}: {row['cnt']}")
+
+        cur.execute("""
+            SELECT unified_group, sync_status, COUNT(*) as cnt, SUM(COALESCE(record_count, 0)) as total_records
+            FROM gis_layers_registry GROUP BY unified_group, sync_status ORDER BY unified_group, sync_status
+        """)
+        print("\n  Per Group:")
+        grp = None
+        for row in cur.fetchall():
+            if row['unified_group'] != grp:
+                grp = row['unified_group']
+                print(f"\n    {grp}:")
+            records = f" ({int(row['total_records']):,} records)" if row['total_records'] else ""
+            print(f"      {row['sync_status']}: {row['cnt']}{records}")
+
+        cur.execute("SELECT COUNT(*) as cnt FROM gis_infrastructure")
+        print(f"\n  Total features in DB: {cur.fetchone()['cnt']:,}")
+
+        cur.execute("SELECT id, server_name, layer_name, error_message FROM gis_layers_registry WHERE sync_status = 'error'")
+        errors = cur.fetchall()
+        if errors:
+            print(f"\n  Errors ({len(errors)}):")
+            for e in errors:
+                print(f"    [{e['id']}] {e['server_name']} - {e['layer_name']}: {(e['error_message'] or '')[:80]}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='GIS ETL: ArcGIS -> PostGIS')
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--all', action='store_true')
+    group.add_argument('--group', type=str)
+    group.add_argument('--layer-id', type=int)
+    group.add_argument('--status', action='store_true')
+    group.add_argument('--retry-errors', action='store_true')
+    parser.add_argument('--db', type=str)
+    args = parser.parse_args()
+
+    db_url = args.db or DATABASE_URL
+    if not db_url:
+        print("ERROR: Set DATABASE_URL env var or pass --db")
+        sys.exit(1)
+
+    conn = psycopg.connect(db_url, autocommit=False)
+    try:
+        if args.status:
+            cmd_status(conn)
+        elif args.all:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT id FROM gis_layers_registry ORDER BY id")
+                ids = [r['id'] for r in cur.fetchall()]
+            for lid in ids:
+                sync_layer(conn, lid)
+        elif args.group:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT id FROM gis_layers_registry WHERE unified_group = %s ORDER BY id", (args.group,))
+                ids = [r['id'] for r in cur.fetchall()]
+            if not ids:
+                print(f"No layers for group '{args.group}'")
+                return
+            for lid in ids:
+                sync_layer(conn, lid)
+        elif args.layer_id:
+            sync_layer(conn, args.layer_id)
+        elif args.retry_errors:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT id FROM gis_layers_registry WHERE sync_status = 'error' ORDER BY id")
+                ids = [r['id'] for r in cur.fetchall()]
+            for lid in ids:
+                sync_layer(conn, lid)
+    finally:
+        conn.close()
+
+if __name__ == '__main__':
+    main()
