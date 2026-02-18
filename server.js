@@ -30,6 +30,7 @@ app.use('/api', require('./routes/intelligence'));
 app.use('/api/layers', require('./routes/layers'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api', require('./routes/streetview'));
+app.use('/api/gis', require('./routes/gis'));
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found', path: req.originalUrl });
