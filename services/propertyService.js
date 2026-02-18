@@ -212,14 +212,27 @@ async function getPropertyDetail(attomId) {
     });
   }
 
+  // Normalize property and climate data
+  const property = normalizeRow(propertyResult.rows[0]);
+  const climate = normalizeRow(climateResult.rows[0]);
+
+  // Cast numeric GIS fields to Number (PostgreSQL returns NUMERIC as strings)
+  const numericGisFields = ['nearestWaterFt', 'nearestWaterDiam', 'nearestSewerFt', 'nearestSewerDiam', 'nearestStormFt', 'nearestStormDiam'];
+  for (const field of numericGisFields) {
+    if (property[field] != null) property[field] = Number(property[field]);
+  }
+  if (climate && climate.floodChanceFuture != null) {
+    climate.floodChanceFuture = Number(climate.floodChanceFuture);
+  }
+
   return {
-    ...normalizeRow(propertyResult.rows[0]),
+    ...property,
     ownership: normalizeRows(ownershipResult.rows),
     taxAssessments: normalizeRows(taxResult.rows),
     salesTransactions: sales,
     currentLoans: normalizeRows(loansResult.rows),
     valuations: normalizeRows(valuationsResult.rows),
-    climateRisk: normalizeRow(climateResult.rows[0]) || null,
+    climateRisk: climate || null,
     buildingPermits: normalizeRows(permitsResult.rows),
     foreclosureRecords: normalizeRows(foreclosureResult.rows),
   };
