@@ -2,6 +2,7 @@ const propertyService = require('./propertyService');
 const spatialService = require('./spatialService');
 const { parseBbox } = require('../utils/normalize');
 const { buildSystemPrompt } = require('../knowledge/system-prompt');
+const { processQuery } = require('../knowledge/intent-classifier');
 
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
@@ -78,6 +79,46 @@ NEVER pass text labels like "multifamily" or "COMMERCIAL" — ONLY numeric codes
   },
 ];
 
+/**
+ * Merge classifier-extracted params into Claude's tool input.
+ * Classifier values OVERRIDE for structured fields like assetCodes.
+ * Other fields only fill in if Claude didn't set them.
+ */
+function mergeClassifierParams(toolInput, classifierParams) {
+  const merged = { ...toolInput };
+
+  // assetCodes ALWAYS override Claude's propertyType
+  if (classifierParams.assetCodes && classifierParams.assetCodes.length > 0) {
+    merged.propertyType = classifierParams.assetCodes.join(',');
+  }
+
+  // These only apply if Claude didn't set them
+  if (classifierParams.zipCodes && classifierParams.zipCodes[0] && !toolInput.zipCode) {
+    merged.zipCode = classifierParams.zipCodes[0];
+  }
+  if (classifierParams.minLotAcres != null && toolInput.minAcres == null) {
+    merged.minAcres = classifierParams.minLotAcres;
+  }
+  if (classifierParams.maxLotAcres != null && toolInput.maxAcres == null) {
+    merged.maxAcres = classifierParams.maxLotAcres;
+  }
+  if (classifierParams.minPrice != null && toolInput.minValue == null) {
+    merged.minValue = classifierParams.minPrice;
+  }
+  if (classifierParams.maxPrice != null && toolInput.maxValue == null) {
+    merged.maxValue = classifierParams.maxPrice;
+  }
+
+  // Boolean flags - set to true if classifier detected them
+  if (classifierParams.absenteeOwner) merged.absenteeOwner = true;
+  if (classifierParams.ownerOccupied) merged.ownerOccupied = true;
+  if (classifierParams.corporateOwned) merged.corporateOwned = true;
+  if (classifierParams.foreclosure) merged.foreclosure = true;
+  if (classifierParams.highEquity) merged.highEquity = true;
+
+  return merged;
+}
+
 async function executeTool(toolName, toolInput) {
   console.log(`[TOOL] ${toolName} called with:`, JSON.stringify(toolInput));
 
@@ -122,8 +163,36 @@ async function chat(messages, context = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
 
-  // Build CRE-aware system prompt with optional runtime context
-  const systemPrompt = buildSystemPrompt(context);
+  // Extract last user message text (handle string or array content)
+  const lastUserMsg = messages.filter(m => m.role === 'user').pop();
+  let userText = '';
+  if (lastUserMsg) {
+    if (typeof lastUserMsg.content === 'string') {
+      userText = lastUserMsg.content;
+    } else if (Array.isArray(lastUserMsg.content)) {
+      userText = lastUserMsg.content
+        .filter(c => c.type === 'text')
+        .map(c => c.text)
+        .join(' ');
+    }
+  }
+
+  // Run intent classifier (non-fatal if it fails)
+  let classifierResult = null;
+  try {
+    classifierResult = await processQuery(userText, context);
+    console.log(`[CLASSIFIER] Intent: ${classifierResult.intent?.name || 'none'}, Confidence: ${((classifierResult.intent?.confidence || 0) * 100).toFixed(1)}%`);
+    console.log(`[CLASSIFIER] Params:`, JSON.stringify(classifierResult.params || {}));
+    console.log(`[CLASSIFIER] Asset codes: ${classifierResult.params?.assetCodes?.join(',') || 'none'}, ZIP codes: ${classifierResult.params?.zipCodes?.join(',') || 'none'}`);
+  } catch (err) {
+    console.log(`[CLASSIFIER] Failed (non-fatal): ${err.message}`);
+  }
+
+  // Enrich context with classifier result for system prompt
+  const enrichedContext = { ...context, classifierResult };
+
+  // Build CRE-aware system prompt with enriched context
+  const systemPrompt = buildSystemPrompt(enrichedContext);
 
   // Collect attom_ids from tool results
   const collectedProperties = [];
@@ -138,7 +207,18 @@ async function chat(messages, context = {}) {
 
     for (const tu of toolUseBlocks) {
       try {
-        const result = await executeTool(tu.name, tu.input);
+        // Merge classifier params for search_properties
+        let toolInputToUse = tu.input;
+        if (tu.name === 'search_properties' && classifierResult?.params) {
+          const merged = mergeClassifierParams(tu.input, classifierResult.params);
+          if (JSON.stringify(merged) !== JSON.stringify(tu.input)) {
+            console.log(`[MERGE] Before:`, JSON.stringify(tu.input));
+            console.log(`[MERGE] After:`, JSON.stringify(merged));
+          }
+          toolInputToUse = merged;
+        }
+
+        const result = await executeTool(tu.name, toolInputToUse);
 
         // Extract attom_ids from search results
         if (tu.name === 'search_properties' || tu.name === 'spatial_query') {
