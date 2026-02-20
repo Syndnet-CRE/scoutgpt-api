@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const claudeService = require('../services/claudeService');
-const { processQuery } = require('../knowledge/intent-classifier');
+const { classifyIntent, generateGeneralChatResponse } = require('../services/intentRouter');
+const { extractFilters } = require('../services/filterExtractor');
+const { executeSearch } = require('../services/queryBuilder');
+const { generateResponse } = require('../services/responseGenerator');
 
 router.post('/', async (req, res) => {
   try {
@@ -14,79 +17,119 @@ router.post('/', async (req, res) => {
     const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
     const userText = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : '';
 
-    // Run intent classifier to extract CRE parameters
-    const classification = processQuery(userText, {
-      selectedAttomId: context?.selectedProperty || null,
+    // ═══════════════════════════════════════════════════════════════════
+    // LAYER 1: Intent Router (Haiku — fast, cheap)
+    // Classifies intent BEFORE any expensive processing
+    // ═══════════════════════════════════════════════════════════════════
+    const intentResult = await classifyIntent(userText, {
+      selectedProperty: context?.selectedProperty || null,
       bbox: context?.bbox || null,
     });
 
-    console.log(`[INTENT] "${userText.substring(0, 60)}..." → ${classification.intent} (${(classification.primary.confidence * 100).toFixed(0)}%)`);
-    if (classification.params.assetCodes) {
-      console.log(`[INTENT] Asset codes: [${classification.params.assetCodes.join(',')}]`);
-    }
-    if (classification.params.zipCodes) {
-      console.log(`[INTENT] ZIP codes: [${classification.params.zipCodes.join(',')}]`);
+    console.log(`[INTENT_ROUTER] "${userText.substring(0, 60)}${userText.length > 60 ? '...' : ''}" → ${intentResult.intent} (${(intentResult.confidence * 100).toFixed(0)}%) — ${intentResult.reasoning}`);
+
+    // ── Handle general_chat: Haiku response only (no Sonnet, no DB) ──
+    if (intentResult.intent === 'general_chat') {
+      const chatResponse = await generateGeneralChatResponse(userText, context);
+      return res.json({
+        text: chatResponse.text,
+        properties: [],
+        propertyMarkers: [],
+        intent: 'general_chat',
+      });
     }
 
-    // Build context for Claude's system prompt
+    // ── Handle clarification_needed: Return question directly ──
+    if (intentResult.intent === 'clarification_needed' && intentResult.clarification_question) {
+      return res.json({
+        text: intentResult.clarification_question,
+        properties: [],
+        propertyMarkers: [],
+        intent: 'clarification_needed',
+        awaiting_clarification: true,
+      });
+    }
+
+    // ── Handle property_search: Layer 2 (Filter Extraction) + Layer 3 (Query Builder) ──
+    if (intentResult.intent === 'property_search') {
+      try {
+        // Layer 2: Extract filters from natural language via Sonnet
+        const extraction = await extractFilters(userText, {
+          bbox: context?.bbox || null,
+          selectedProperty: context?.selectedProperty || null,
+        });
+
+        // If clarification needed, return question to user
+        if (extraction.clarifications.length > 0 && extraction.filters.length === 0) {
+          const clarText = extraction.clarifications.map(c => {
+            let msg = c.question;
+            if (c.suggestions && c.suggestions.length > 0) {
+              msg += '\n' + c.suggestions.map(s => `- ${s}`).join('\n');
+            }
+            return msg;
+          }).join('\n\n');
+
+          return res.json({
+            text: clarText,
+            properties: [],
+            propertyMarkers: [],
+            awaiting_clarification: true,
+            intent: 'clarification_needed',
+          });
+        }
+
+        // Layer 3: Build and execute query
+        const queryResult = await executeSearch({
+          filters: extraction.filters,
+          spatial: extraction.spatial,
+          sort: extraction.sort,
+          limit: extraction.limit,
+          insights_to_check: extraction.insights_to_check,
+        });
+
+        // Build property markers for map
+        const propertyMarkers = (queryResult.properties || []).map(p => ({
+          attomId: p.attom_id,
+          latitude: parseFloat(p.latitude),
+          longitude: parseFloat(p.longitude),
+        })).filter(m => m.latitude && m.longitude);
+
+        const attomIds = (queryResult.properties || []).map(p => p.attom_id);
+
+        const text = generateResponse(extraction, queryResult, userText);
+
+        return res.json({
+          text,
+          properties: attomIds,
+          propertyMarkers,
+          appliedFilters: extraction.filters,
+          intent: 'property_search',
+        });
+
+      } catch (err) {
+        console.error('[chat] property_search v2 pipeline error:', err.message);
+        console.log('[chat] Falling back to existing regex + Sonnet pipeline...');
+        // Fall through to existing pipeline below
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FALLBACK: property_detail, market_analysis → Sonnet pipeline
+    // ═══════════════════════════════════════════════════════════════════
+
     const chatContext = {
       selectedAttomId: context?.selectedProperty || null,
       viewport: context?.bbox || null,
-      // Pass classified intent and extracted params so system prompt can include them
-      intent: classification.intent,
-      params: classification.params,
+      intent: intentResult.intent,
     };
 
-    // Inject classified parameters into the user message as structured context
-    // This ensures Claude uses the correct codes regardless of its own interpretation
-    if (classification.intent !== 'GENERAL' && lastUserMsg) {
-      const hints = [];
-
-      if (classification.params.assetCodes && classification.params.assetCodes.length > 0) {
-        hints.push(`Property type codes to use: [${classification.params.assetCodes.join(',')}] (${classification.params.assetLabel || classification.params.assetClass})`);
-      }
-      if (classification.params.zipCodes && classification.params.zipCodes.length > 0) {
-        hints.push(`ZIP codes: ${classification.params.zipCodes.join(', ')}`);
-      }
-      if (classification.params.maxPrice) {
-        hints.push(`Max price: $${classification.params.maxPrice.toLocaleString()}`);
-      }
-      if (classification.params.minPrice) {
-        hints.push(`Min price: $${classification.params.minPrice.toLocaleString()}`);
-      }
-      if (classification.params.minBuildingSf) {
-        hints.push(`Min building SF: ${classification.params.minBuildingSf.toLocaleString()}`);
-      }
-      if (classification.params.minLotAcres) {
-        hints.push(`Min lot acres: ${classification.params.minLotAcres}`);
-      }
-      if (classification.params.unitsNote) {
-        hints.push(classification.params.unitsNote);
-      }
-      if (classification.params.absenteeOwner) hints.push('Filter: absentee owners');
-      if (classification.params.corporateOwned) hints.push('Filter: corporate owned');
-      if (classification.params.taxDelinquent) hints.push('Filter: tax delinquent');
-      if (classification.params.foreclosure) hints.push('Filter: foreclosure');
-      if (classification.params.propertyClass) hints.push(`Target property class: ${classification.params.propertyClass}`);
-
-      if (context?.bbox) {
-        hints.push(`Map viewport bbox: ${context.bbox}`);
-      }
-      if (context?.selectedProperty) {
-        hints.push(`Selected property attomId: ${context.selectedProperty}`);
-      }
-
-      if (hints.length > 0) {
-        const hintBlock = `[ScoutGPT Classification: ${classification.intent} | ${hints.join(' | ')}]`;
-        // Prepend hints to the user message
-        if (typeof lastUserMsg.content === 'string') {
-          lastUserMsg.content = `${hintBlock}\n\n${lastUserMsg.content}`;
-        }
-      }
-    }
-
     const result = await claudeService.chat(messages, chatContext);
-    res.json({ text: result.text, properties: result.properties, propertyMarkers: result.propertyMarkers });
+    res.json({
+      text: result.text,
+      properties: result.properties,
+      propertyMarkers: result.propertyMarkers,
+      intent: intentResult.intent,
+    });
   } catch (error) {
     console.error('Error in chat:', error);
     if (error.message.includes('ANTHROPIC_API_KEY')) {

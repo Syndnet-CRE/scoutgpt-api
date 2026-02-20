@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const { loadRegistry } = require('./services/registryService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -41,6 +42,17 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error', details: err.message });
 });
 
-app.listen(PORT, () => {
-  console.log(`ScoutGPT API running on port ${PORT}`);
-});
+(async () => {
+  // Load filters registry
+  try {
+    await loadRegistry();
+    console.log('[STARTUP] Filters registry loaded');
+  } catch (err) {
+    console.error('[STARTUP] Failed to load filters registry:', err.message);
+    // Non-fatal: API can still run with existing NLQ pipeline
+  }
+
+  app.listen(PORT, () => {
+    console.log(`ScoutGPT API running on port ${PORT}`);
+  });
+})();

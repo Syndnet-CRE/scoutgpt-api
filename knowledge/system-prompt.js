@@ -13,7 +13,7 @@
  *   const systemPrompt = buildSystemPrompt(context);
  */
 
-const { CODE_GROUPS, ALL_COMMERCIAL_CODES, codeToName } = require('./dictionary');
+const { CODE_GROUPS, ALL_COMMERCIAL_CODES, codeToName } = require('./archived/dictionary');
 const { DISTRESS_SIGNALS, SCORE_LABELS } = require('./distress-signals');
 
 // ─── Code Group Reference (compact format for system prompt) ────────────────

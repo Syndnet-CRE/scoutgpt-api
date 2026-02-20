@@ -8,7 +8,7 @@
  * All size-based subtyping uses area_building (building SF) as the proxy.
  */
 
-const { PROPERTY_CODES, CODE_GROUPS, codeToName, codeToGroup } = require('./dictionary');
+const { PROPERTY_CODES, CODE_GROUPS, codeToName, codeToGroup } = require('./archived/dictionary');
 
 // ─── Subtype Definitions ────────────────────────────────────────────────────
 // For each code, define subtypes based on area_building thresholds

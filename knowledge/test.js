@@ -3,8 +3,8 @@
  * Run: node knowledge/test.js
  */
 
-const { PROPERTY_CODES, CODE_GROUPS, ALL_COMMERCIAL_CODES, codeToName, codeToGroup, groupToCodes, codesToSqlIn, codeToDisplay, getCodeMeta } = require('./dictionary');
-const { resolveAssetClass, resolveVagueTerm, extractAssetClasses } = require('./thesaurus');
+const { PROPERTY_CODES, CODE_GROUPS, ALL_COMMERCIAL_CODES, codeToName, codeToGroup, groupToCodes, codesToSqlIn, codeToDisplay, getCodeMeta } = require('./archived/dictionary');
+const { resolveAssetClass, resolveVagueTerm, extractAssetClasses } = require('./archived/thesaurus');
 const { getSubtype, formatPropertyType, isCommercialCode, isLand, getPriceMetric } = require('./asset-taxonomy');
 
 let passed = 0;
