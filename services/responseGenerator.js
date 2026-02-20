@@ -378,7 +378,7 @@ function buildFollowUps(searchResult, isZeroResults) {
  * @param {string} userMessage - The original user message
  * @returns {string} Formatted markdown response with headline, transparency, table, insights, and follow-ups
  */
-export function generateResponse(extractionResult, searchResult, userMessage) {
+function generateResponse(extractionResult, searchResult, userMessage) {
   const totalCount = searchResult.total_count || 0;
   const isZeroResults = totalCount === 0;
 
@@ -417,3 +417,5 @@ export function generateResponse(extractionResult, searchResult, userMessage) {
 
   return sections.join('\n\n');
 }
+
+module.exports = { generateResponse };
