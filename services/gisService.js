@@ -124,30 +124,44 @@ function buildFeatureCollection(rows, layerType) {
       properties._flood_zone = floodZone;
       properties.is_sfha = isSfha;
     } else if (layerType === 'traffic_roadways') {
+      // TxDOT Roadway Inventory field names
       const attrs = row.attributes || {};
+      properties.RTE_PRFX = attrs.RTE_PRFX || attrs.rte_prfx || null;
+      properties.RTE_NBR = attrs.RTE_NBR || attrs.rte_nbr || null;
+      properties.MAP_LBL = attrs.MAP_LBL || attrs.map_lbl || null;
+      properties.DES_DRCT = attrs.DES_DRCT || attrs.des_drct || null;
       properties.road_name = attrs.ROAD_NAME || attrs.RoadName || attrs.NAME || attrs.FULLNAME || null;
-      properties.road_class = attrs.ROAD_CLASS || attrs.RoadClass || attrs.FUNC_CLASS || null;
-      properties.lanes = attrs.LANES || attrs.NumLanes || null;
     } else if (layerType === 'traffic_aadt') {
+      // TxDOT AADT Station field names (note underscores)
       const attrs = row.attributes || {};
-      properties.aadt = attrs.AADT || attrs.aadt || attrs.TRAFFIC_COUNT || attrs.AVG_DAILY_TRAFFIC || null;
-      properties.road_name = attrs.ROAD_NAME || attrs.RoadName || attrs.NAME || null;
-      properties.year = attrs.YEAR || attrs.COUNT_YEAR || null;
+      properties._AADT = attrs._AADT || attrs.AADT || attrs.aadt || null;
+      properties._AADT_YEAR = attrs._AADT_YEAR || attrs.AADT_YEAR || attrs.YEAR || null;
+      properties.CNTY = attrs.CNTY || attrs.cnty || attrs.COUNTY || null;
+      // Historical AADT values F2001-F2020 for sparkline
+      for (let y = 2001; y <= 2020; y++) {
+        const key = `F${y}`;
+        properties[key] = attrs[key] || attrs[key.toLowerCase()] || null;
+      }
     } else if (layerType === 'city_limits') {
       const attrs = row.attributes || {};
-      properties.city_name = attrs.CITY_NAME || attrs.CityName || attrs.NAME || attrs.CITY || null;
+      properties.city_name = attrs.CITY_NAME || attrs.CityName || attrs.NAME || attrs.CITY || row.zone_code || null;
+      properties.zone_code = properties.city_name;
     } else if (layerType === 'etj_boundaries') {
       const attrs = row.attributes || {};
-      properties.jurisdiction = attrs.JURISDICTION || attrs.Jurisdiction || attrs.NAME || attrs.CITY || null;
+      properties.jurisdiction = attrs.JURISDICTION || attrs.Jurisdiction || attrs.NAME || attrs.CITY || row.zone_code || null;
+      properties.zone_code = properties.jurisdiction;
     } else if (layerType === 'etj_released') {
       const attrs = row.attributes || {};
-      properties.jurisdiction = attrs.JURISDICTION || attrs.Jurisdiction || attrs.NAME || null;
+      properties.jurisdiction = attrs.JURISDICTION || attrs.Jurisdiction || attrs.NAME || row.zone_code || null;
+      properties.zone_code = properties.jurisdiction;
       properties.release_date = attrs.RELEASE_DATE || attrs.ReleaseDate || null;
     } else if (layerType === 'future_land_use') {
       const attrs = row.attributes || {};
-      properties.land_use_code = attrs.LAND_USE_CODE || attrs.LandUseCode || attrs.FLU_CODE || attrs.CODE || null;
+      const code = attrs.LAND_USE_CODE || attrs.LandUseCode || attrs.FLU_CODE || attrs.CODE || row.zone_code || null;
+      properties.land_use_code = code;
+      properties.zone_code = code; // Frontend expects zone_code for categorization
+      properties.land_use = code;  // Alternative field name
       properties.land_use_desc = attrs.LAND_USE_DESC || attrs.LandUseDesc || attrs.FLU_DESC || attrs.DESCRIPTION || null;
-      properties._land_use_code = properties.land_use_code;
     }
 
     return {
