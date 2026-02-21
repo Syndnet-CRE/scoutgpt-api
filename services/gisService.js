@@ -6,6 +6,12 @@ const UNIFIED_GROUPS = {
   storm: 'stormwater_lines',
   zoning: 'zoning_districts',
   flood: 'floodplains',
+  traffic_roadways: 'traffic_roadways',
+  traffic_aadt: 'traffic_aadt',
+  city_limits: 'city_limits',
+  etj_boundaries: 'etj_boundaries',
+  etj_released: 'etj_released',
+  future_land_use: 'future_land_use',
 };
 
 const LIMIT = 15000;
@@ -117,6 +123,31 @@ function buildFeatureCollection(rows, layerType) {
       properties.flood_zone = floodZone;
       properties._flood_zone = floodZone;
       properties.is_sfha = isSfha;
+    } else if (layerType === 'traffic_roadways') {
+      const attrs = row.attributes || {};
+      properties.road_name = attrs.ROAD_NAME || attrs.RoadName || attrs.NAME || attrs.FULLNAME || null;
+      properties.road_class = attrs.ROAD_CLASS || attrs.RoadClass || attrs.FUNC_CLASS || null;
+      properties.lanes = attrs.LANES || attrs.NumLanes || null;
+    } else if (layerType === 'traffic_aadt') {
+      const attrs = row.attributes || {};
+      properties.aadt = attrs.AADT || attrs.aadt || attrs.TRAFFIC_COUNT || attrs.AVG_DAILY_TRAFFIC || null;
+      properties.road_name = attrs.ROAD_NAME || attrs.RoadName || attrs.NAME || null;
+      properties.year = attrs.YEAR || attrs.COUNT_YEAR || null;
+    } else if (layerType === 'city_limits') {
+      const attrs = row.attributes || {};
+      properties.city_name = attrs.CITY_NAME || attrs.CityName || attrs.NAME || attrs.CITY || null;
+    } else if (layerType === 'etj_boundaries') {
+      const attrs = row.attributes || {};
+      properties.jurisdiction = attrs.JURISDICTION || attrs.Jurisdiction || attrs.NAME || attrs.CITY || null;
+    } else if (layerType === 'etj_released') {
+      const attrs = row.attributes || {};
+      properties.jurisdiction = attrs.JURISDICTION || attrs.Jurisdiction || attrs.NAME || null;
+      properties.release_date = attrs.RELEASE_DATE || attrs.ReleaseDate || null;
+    } else if (layerType === 'future_land_use') {
+      const attrs = row.attributes || {};
+      properties.land_use_code = attrs.LAND_USE_CODE || attrs.LandUseCode || attrs.FLU_CODE || attrs.CODE || null;
+      properties.land_use_desc = attrs.LAND_USE_DESC || attrs.LandUseDesc || attrs.FLU_DESC || attrs.DESCRIPTION || null;
+      properties._land_use_code = properties.land_use_code;
     }
 
     return {

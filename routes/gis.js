@@ -51,5 +51,11 @@ router.get('/sewer', (req, res) => handleGisRequest(req, res, 'sewer'));
 router.get('/storm', (req, res) => handleGisRequest(req, res, 'storm'));
 router.get('/zoning', (req, res) => handleGisRequest(req, res, 'zoning'));
 router.get('/flood', (req, res) => handleGisRequest(req, res, 'flood'));
+router.get('/traffic-roadways', (req, res) => handleGisRequest(req, res, 'traffic_roadways'));
+router.get('/traffic-aadt', (req, res) => handleGisRequest(req, res, 'traffic_aadt'));
+router.get('/city-limits', (req, res) => handleGisRequest(req, res, 'city_limits'));
+router.get('/etj-boundaries', (req, res) => handleGisRequest(req, res, 'etj_boundaries'));
+router.get('/etj-released', (req, res) => handleGisRequest(req, res, 'etj_released'));
+router.get('/future-land-use', (req, res) => handleGisRequest(req, res, 'future_land_use'));
 
 module.exports = router;
