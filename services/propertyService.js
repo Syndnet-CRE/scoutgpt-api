@@ -172,21 +172,9 @@ async function searchProperties({ bbox, filters = {}, limit = 500 }) {
 }
 
 async function getPropertyDetail(attomId) {
-  const [propertyResult, ownershipResult, taxResult, salesResult, loansResult, valuationsResult, climateResult, permitsResult, foreclosureResult] = await Promise.all([
-    pool.query(`
-      SELECT
-        p.*,
-        pd.legal_description, pd.legal_lot, pd.legal_block, pd.legal_section,
-        pd.construction_type, pd.exterior_walls, pd.interior_walls,
-        pd.foundation, pd.roof_type, pd.roof_material, pd.floor_type,
-        pd.garage_type, pd.garage_area, pd.parking_spaces,
-        pd.pool_type, pd.has_pool, pd.has_spa,
-        pd.has_elevator, pd.has_fireplace, pd.fireplace_count,
-        pd.hvac_cooling, pd.hvac_heating, pd.hvac_fuel,
-        pd.quality_grade, pd.condition, pd.gross_area
-      FROM properties p
-      LEFT JOIN property_details pd ON pd.attom_id = p.attom_id
-      WHERE p.attom_id = $1`, [attomId]),
+  const [propertyResult, detailsResult, ownershipResult, taxResult, salesResult, loansResult, valuationsResult, climateResult, permitsResult, foreclosureResult] = await Promise.all([
+    pool.query(`SELECT * FROM properties WHERE attom_id = $1`, [attomId]),
+    pool.query(`SELECT * FROM property_details WHERE attom_id = $1`, [attomId]),
     pool.query(`SELECT * FROM ownership WHERE attom_id = $1 ORDER BY ownership_sequence ASC`, [attomId]),
     pool.query(`SELECT * FROM tax_assessments WHERE attom_id = $1 ORDER BY tax_year DESC LIMIT 5`, [attomId]),
     pool.query(`SELECT st.* FROM sales_transactions st WHERE st.attom_id = $1 ORDER BY st.recording_date DESC LIMIT 10`, [attomId]),
@@ -199,21 +187,29 @@ async function getPropertyDetail(attomId) {
 
   if (propertyResult.rows.length === 0) return null;
 
-  // Attach mortgages to each sale
-  const sales = [];
-  for (const sale of salesResult.rows) {
+  // Batch mortgage query — single query instead of N+1
+  const transactionIds = salesResult.rows.map(s => s.transaction_id).filter(Boolean);
+  const mortgagesByTxn = {};
+  if (transactionIds.length > 0) {
     const mortgageResult = await pool.query(
-      `SELECT * FROM mortgage_records WHERE transaction_id = $1 ORDER BY mortgage_position ASC`,
-      [sale.transaction_id]
+      `SELECT * FROM mortgage_records WHERE transaction_id = ANY($1::bigint[]) ORDER BY mortgage_position ASC`,
+      [transactionIds]
     );
-    sales.push({
-      ...normalizeRow(sale),
-      mortgages: normalizeRows(mortgageResult.rows),
-    });
+    for (const row of mortgageResult.rows) {
+      const txnId = row.transaction_id;
+      if (!mortgagesByTxn[txnId]) mortgagesByTxn[txnId] = [];
+      mortgagesByTxn[txnId].push(row);
+    }
   }
 
-  // Normalize property and climate data
+  const sales = salesResult.rows.map(sale => ({
+    ...normalizeRow(sale),
+    mortgages: normalizeRows(mortgagesByTxn[sale.transaction_id] || []),
+  }));
+
+  // Normalize property, property_details, and climate data
   const property = normalizeRow(propertyResult.rows[0]);
+  const details = normalizeRow(detailsResult.rows[0]);
   const climate = normalizeRow(climateResult.rows[0]);
 
   // Cast numeric GIS fields to Number (PostgreSQL returns NUMERIC as strings)
@@ -225,8 +221,11 @@ async function getPropertyDetail(attomId) {
     climate.floodChanceFuture = Number(climate.floodChanceFuture);
   }
 
+  // Merge property_details flat onto root — property fields take precedence on collision (e.g. attomId)
+  const merged = { ...(details || {}), ...property };
+
   return {
-    ...property,
+    ...merged,
     ownership: normalizeRows(ownershipResult.rows),
     taxAssessments: normalizeRows(taxResult.rows),
     salesTransactions: sales,
