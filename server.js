@@ -32,8 +32,11 @@ app.use((req, res, next) => {
 });
 
 app.use('/api/health', require('./routes/health'));
-app.use('/api/properties', require('./routes/properties'));
+app.use('/api/properties/polygon', require('./routes/polygon'));
+app.use('/api/properties/clusters', require('./routes/clusters'));
+app.use('/api/properties/heatmap', require('./routes/heatmap'));
 app.use('/api/properties/filter', require('./routes/filter'));
+app.use('/api/properties', require('./routes/properties'));
 app.use('/api/property', require('./routes/property'));
 app.use('/api', require('./routes/intelligence'));
 app.use('/api/layers', require('./routes/layers'));
