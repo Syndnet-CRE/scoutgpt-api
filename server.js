@@ -8,7 +8,15 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (curl, server-to-server)
+    if (!origin) return callback(null, true);
+    const allowed = (process.env.CORS_ORIGIN || '*').split(',').map(s => s.trim());
+    if (allowed.includes('*') || allowed.includes(origin)) {
+      return callback(null, origin);
+    }
+    callback(new Error('CORS not allowed'));
+  },
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
